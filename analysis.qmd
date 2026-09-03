@@ -1,0 +1,127 @@
+# Title: "Wildfires and Movies"
+# execute:
+  echo: false
+
+```{r}
+#| message: false
+library(tidyverse)
+library(purrr)
+library(leaflet)
+library(rvest)
+library(httr2)
+library(jsonlite)
+```
+
+```{r}
+raw <- read_json("data/wildfires.geojson")
+length(raw$features)
+```
+
+```{r}
+first_fire <- raw$features[[1]]
+names(first_fire)
+```
+
+```{r}
+first_coordinate <- first_fire$geometry$coordinates[[1]][[1]]
+first_coordinate
+```
+
+```{r}
+features_tbl <- tibble(features = raw$features)
+features_tbl
+```
+
+```{r}
+features_wide <- features_tbl |> unnest_wider(features)
+features_wide
+```
+
+```{r}
+properties_wide <- features_wide |> unnest_wider(properties)
+properties_wide
+```
+
+```{r}
+#| cache: true
+fires <- properties_wide |>
+  unnest_wider(geometry, names_sep = "_") |>
+  select(incident, gis_acres, fire_year, agency, state, geometry_coordinates) |>
+  mutate(
+    gis_acres = as.numeric(gis_acres),
+    fire_year = as.integer(fire_year)
+  )
+```
+
+```{r}
+august_fires <- fires |> filter(str_detect(incident, "August"))
+nrow(august_fires)
+
+fires |> arrange(desc(gis_acres)) |> slice_head(n = 10)
+
+ggplot(fires, aes(x = gis_acres)) +
+  geom_histogram() +
+  scale_x_log10()
+
+acres_by_year <- fires |>
+  group_by(fire_year) |>
+  summarize(total_acres = sum(gis_acres, na.rm = TRUE))
+
+ggplot(acres_by_year, aes(x = fire_year, y = total_acres)) +
+  geom_line() +
+  labs(
+    title = "Total Acres Burned by Year",
+    x = "Year",
+    y = "Total Acres Burned",
+    caption = "Source: Wildfire incident data"
+  )
+
+acres_by_state <- fires |>
+  group_by(state) |>
+  summarize(total_acres = sum(gis_acres, na.rm = TRUE)) |>
+  slice_max(total_acres, n = 10, with_ties = FALSE) |>
+  mutate(state = fct_reorder(state, total_acres))
+
+ggplot(acres_by_state, aes(x = state, y = total_acres)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 10 States by Total Acres Burned",
+    x = "State",
+    y = "Total Acres Burned",
+    caption = "Source: Wildfire incident data"
+  )
+```
+
+```{r}
+big_fires <- fires |>
+  filter(gis_acres >= 100000) |>
+  mutate(
+    lon = map_dbl(geometry_coordinates, \(coordinates) {
+      mean(map_dbl(coordinates[[1]], 1))
+    }),
+    lat = map_dbl(geometry_coordinates, \(coordinates) {
+      mean(map_dbl(coordinates[[1]], 2))
+    })
+  )
+
+big_fires
+
+big_fires_by_agency <- big_fires |>
+  count(agency, name = "number_of_fires")
+
+ggplot(big_fires_by_agency, aes(x = agency, y = number_of_fires)) +
+  geom_col() +
+  labs(
+    title = "Number of Big Fires by Managing Agency",
+    x = "Managing Agency",
+    y = "Number of Big Fires"
+  )
+```
+
+```{r}
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  setView(lng = -115, lat = 40, zoom = 4) |>
+  addGeoJSON(jsonlite::toJSON(raw, auto_unbox = TRUE))
+```
