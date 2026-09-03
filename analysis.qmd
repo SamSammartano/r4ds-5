@@ -125,3 +125,163 @@ leaflet() |>
   setView(lng = -115, lat = 40, zoom = 4) |>
   addGeoJSON(jsonlite::toJSON(raw, auto_unbox = TRUE))
 ```
+
+```{r}
+scrape_imdb_snapshot <- function(url, snap_year) {
+  page <- request(url) |>
+    req_timeout(30) |>
+    req_retry(max_tries = 3, backoff = ~ 2 ^ .x) |>
+    req_perform() |>
+    resp_body_html()
+
+  rows <- page |> html_elements("tbody tr")
+
+  tibble(
+    snap_year = snap_year,
+    rank = seq_along(rows),
+    title = rows |> html_element(".titleColumn a") |> html_text2(),
+    year = rows |>
+      html_element(".titleColumn .secondaryInfo") |>
+      html_attr("data-value") |>
+      as.integer(),
+    rating = rows |>
+      html_element(".ratingColumn.imdbRating strong") |>
+      html_text2() |>
+      as.numeric(),
+    number = rows |>
+      html_element(".ratingColumn.imdbRating strong") |>
+      html_attr("data-value") |>
+      as.numeric()
+  )
+}
+
+snapshot_urls <- c(
+  "https://web.archive.org/web/20150101000000/http://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20170101000000/http://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20190101000000/https://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20210101000000/https://www.imdb.com/chart/top/",
+  "https://web.archive.org/web/20220101000000/https://www.imdb.com/chart/top/"
+)
+
+snapshot_years <- c(2015, 2017, 2019, 2021, 2022)
+
+imdb_snapshots <- map2(snapshot_urls, snapshot_years, scrape_imdb_snapshot) |>
+  list_rbind()
+
+imdb_snapshots
+
+imdb_snapshots |>
+  count(snap_year)
+```
+
+```{r}
+rank_changes <- imdb_snapshots |>
+  filter(snap_year %in% c(2015, 2022)) |>
+  select(title, year, snap_year, rank) |>
+  pivot_wider(names_from = snap_year, values_from = rank, names_prefix = "rank_") |>
+  filter(!is.na(rank_2015), !is.na(rank_2022)) |>
+  mutate(
+    rank_change = rank_2022 - rank_2015,
+    absolute_rank_change = abs(rank_change),
+    release_decade = floor(year / 10) * 10
+  ) |>
+  arrange(desc(absolute_rank_change)) |>
+  slice_head(n = 10)
+
+rank_changes
+
+rank_changes |>
+  group_by(release_decade) |>
+  summarize(average_rank_change = mean(rank_change)) |>
+  arrange(release_decade)
+```
+
+```{r}
+imdb_snapshots |>
+  filter(snap_year %in% c(2015, 2022)) |>
+  select(title, year, snap_year, rank) |>
+  pivot_wider(names_from = snap_year, values_from = rank, names_prefix = "rank_") |>
+  filter(!is.na(rank_2015), !is.na(rank_2022)) |>
+  mutate(
+    rank_change = rank_2022 - rank_2015,
+    release_decade = floor(year / 10) * 10
+  ) |>
+  group_by(release_decade) |>
+  summarize(average_rank_change = mean(rank_change)) |>
+  mutate(
+    direction = case_when(
+      average_rank_change > 0 ~ "Rose",
+      average_rank_change < 0 ~ "Fell",
+      TRUE ~ "No change"
+    )
+  ) |>
+  ggplot(aes(
+    x = average_rank_change,
+    y = factor(release_decade),
+    fill = direction
+  )) +
+  geom_col() +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  scale_fill_manual(
+    values = c("Rose" = "#c44e52", "Fell" = "#4c78a8", "No change" = "gray70")
+  ) +
+  labs(
+    title = "Average IMDb Rank Change by Release Decade",
+    subtitle = "Comparing films that appear in both the 2015 and 2022 snapshots",
+    x = "Average change in IMDb rank (2015 to 2022)",
+    y = "Release decade",
+    fill = "Rank direction",
+    caption = "Sample size: 183 films appearing in both the 2015 and 2022 snapshots."
+  )
+```
+
+```{r}
+nolan_films <- c(
+  "The Dark Knight",
+  "Inception",
+  "Interstellar",
+  "The Dark Knight Rises",
+  "Memento",
+  "The Prestige",
+  "Batman Begins"
+)
+
+imdb_snapshots |>
+  filter(title %in% nolan_films) |>
+  select(title, snap_year, rank) |>
+  pivot_wider(
+    names_from = snap_year,
+    values_from = rank,
+    names_glue = "rank_{snap_year}"
+  )
+```
+
+```{r}
+imdb_snapshots |>
+  filter(title == "Interstellar") |>
+  ggplot(aes(x = factor(snap_year), y = rank)) +
+  geom_col() +
+  scale_y_reverse() +
+  labs(
+    title = "Interstellar Rank by Snapshot Year",
+    x = "Snapshot Year",
+    y = "Rank"
+  )
+```
+
+```{r}
+film_snapshot_counts <- imdb_snapshots |>
+  distinct(title, snap_year) |>
+  count(title, name = "snapshots_appeared")
+
+film_snapshot_counts |>
+  count(snapshots_appeared, name = "number_of_films") |>
+  ggplot(aes(x = snapshots_appeared, y = number_of_films)) +
+  geom_col() +
+  scale_x_continuous(breaks = 1:5) +
+  labs(
+    title = "Distribution of Film Appearances Across Snapshots",
+    x = "Number of Snapshots Appeared In",
+    y = "Number of Films"
+  )
+```
